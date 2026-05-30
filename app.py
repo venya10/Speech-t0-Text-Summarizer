@@ -1,15 +1,17 @@
+import os
+import tempfile
+
 import streamlit as st
 import whisper
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-import tempfile
+from dotenv import load_dotenv
+from groq import Groq
 
 # page setup
 st.set_page_config(page_title="Speech-to-Text Summarization", layout="wide")
 st.title("Speech-to-Text Summarization")
 st.write("Upload an audio file, transcribe it using Whisper, and summarize it using BART.")
-
-#load Whisper model
 
 @st.cache_resource
 def load_whisper_model(size="base"):
@@ -21,8 +23,6 @@ whisper_model_size = st.sidebar.selectbox(
 st.sidebar.text("Larger models are slower but more accurate.")
 whisper_model = load_whisper_model(whisper_model_size)
 
-
-#load BART model
 @st.cache_resource
 def load_bart_model():
     tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large-cnn")
@@ -33,58 +33,49 @@ def load_bart_model():
 
 tokenizer, bart_model, device = load_bart_model()
 
-#upload audio
-
 audio_file = st.file_uploader("Upload Audio", type=["wav", "mp3", "mp4"])
 
 if audio_file:
-    tfile = tempfile.NamedTemporaryFile(delete=False)
-    tfile.write(audio_file.read())
-    tfile_path = tfile.name
+    if "transcription" not in st.session_state:
+        tfile = tempfile.NamedTemporaryFile(delete=False)
+        tfile.write(audio_file.read())
+        tfile_path = tfile.name
 
-    st.info("Transcribing audio with Whisper...")
-    result = whisper_model.transcribe(tfile_path)
-    transcription = result["text"]
+        st.info("Transcribing audio with Whisper...")
+        result = whisper_model.transcribe(tfile_path)
+        st.session_state.transcription = result["text"]
+
+        st.info("Generating summary with BART...")
+        inputs = tokenizer(
+            st.session_state.transcription,
+            return_tensors="pt",
+            truncation=True,
+            max_length=1024
+        ).to(device)
+
+        summary_ids = bart_model.generate(
+            inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            max_length=150,
+            min_length=30,
+            num_beams=6,
+            length_penalty=1.0,
+            early_stopping=True,
+            no_repeat_ngram_size=3,
+            forced_bos_token_id=bart_model.config.bos_token_id
+        )
+        st.session_state.summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+
     st.subheader("Transcription")
-    st.write(transcription)
-
-
-    #summarize 
-   
-    st.info("Generating summary with BART...")
-    inputs = tokenizer(transcription, return_tensors="pt", truncation=True, max_length=1024).to(device)
-
-    summary_ids = bart_model.generate(
-        inputs["input_ids"],
-        attention_mask=inputs["attention_mask"],
-        max_length=150,
-        min_length=30,
-        num_beams=6,
-        length_penalty=1.0,
-        early_stopping=True,
-        no_repeat_ngram_size=3,
-        forced_bos_token_id=bart_model.config.bos_token_id
-    )
-    summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-
+    st.write(st.session_state.transcription)
     st.subheader("Summary")
-    st.write(summary)
+    st.write(st.session_state.summary)
 
-    # copy/download buttons
-    st.download_button("Download Transcription", transcription, file_name="transcription.txt")
-    st.download_button("Download Summary", summary, file_name="summary.txt")
-
+    st.download_button("Download Transcription", st.session_state.transcription, file_name="transcription.txt")
+    st.download_button("Download Summary", st.session_state.summary, file_name="summary.txt")
 
 
 # CHATBOT (LLAMA-3.3-70B-VERSATILE)
-import os
-
-from dotenv import load_dotenv
-from groq import Groq
-
-# ==================================================
-# ENV + GROQ CLIENT
-# ==================================================
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -100,9 +91,7 @@ st.subheader("💬 Ask Questions about the Audio")
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-user_question = st.chat_input(
-    "Ask a question about the transcription or summary"
-)
+user_question = st.chat_input("Ask a question about the transcription or summary")
 
 def ask_llama(question, transcription, summary):
     response = groq_client.chat.completions.create(
@@ -125,20 +114,21 @@ def ask_llama(question, transcription, summary):
         temperature=0.3,
         max_tokens=500
     )
-
     return response.choices[0].message.content
 
-if user_question and transcription:
-    st.session_state.chat_history.append(("user", user_question))
+if user_question:
+    if "transcription" not in st.session_state:
+        st.warning("Please upload and process an audio file first.")
+    else:
+        st.session_state.chat_history.append(("user", user_question))
+        with st.spinner("🤖 Thinking..."):
+            answer = ask_llama(
+                user_question,
+                st.session_state.transcription,
+                st.session_state.summary
+            )
+        st.session_state.chat_history.append(("assistant", answer))
 
-    with st.spinner("🤖 Thinking..."):
-        answer = ask_llama(user_question, transcription, summary)
-
-    st.session_state.chat_history.append(("assistant", answer))
-
-# ==================================================
-# DISPLAY CHAT
-# ==================================================
 for role, msg in st.session_state.chat_history:
     with st.chat_message(role):
         st.write(msg)

@@ -1,0 +1,6 @@
+streamlit
+openai-whisper
+torch
+transformers
+python-dotenv
+groq

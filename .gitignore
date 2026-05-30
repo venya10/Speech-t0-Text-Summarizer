@@ -1,0 +1,27 @@
+# environment
+.env
+
+# python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# jupyter
+.ipynb_checkpoints/
+
+# audio/video test files
+*.mp3
+*.mp4
+*.wav
+*.m4a
+
+# model cache
+.cache/
